@@ -1,4 +1,8 @@
-﻿namespace Rs.Exp.BingDesktopWallpaper
+﻿using System.Collections.Generic;
+using System.Net;
+using NLog;
+
+namespace Rs.Exp.BingDesktopWallpaper
 {
     using System;
     using System.Globalization;
@@ -6,52 +10,78 @@
     using System.Net.Http;
     using Newtonsoft.Json.Linq;
 
-    internal class BingWallpaperGrabber
+    internal class BingWallpaperGrabber : IDisposable
     {
-        // n = number of images
-        // mkt = location (en-US)
+        private static readonly Logger _logger = LogManager.GetCurrentClassLogger();
+
+        private readonly HttpClient _httpClient;
+        private readonly HttpClientHandler _handler;
+
         const string BING_IMAGE_ARCHIVE_URL = "http://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1";
 
-        /// <summary>
-        /// This will download the latest Bing wallpaper for your region to your "My Pictures" folder.
-        /// </summary>
-        /// <param name="isoRegionCode"></param>
-        /// <param name="imageResolution"></param>
-        /// <returns></returns>
-        public string GrabImage(string isoRegionCode = null, ImageResolution imageResolution = ImageResolution.W1920H1080)
+        internal BingWallpaperGrabber()
         {
-            string retValue;
+            _handler = new HttpClientHandler { AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip };
+            _httpClient = new HttpClient(_handler);
+        }
 
+        internal string GrabImage(string isoRegionCode, List<string> imageResolutions)
+        {
             isoRegionCode = GetAndValidateRegionCode(isoRegionCode);
+            _logger.Debug("Region Code (validated) is {0}", isoRegionCode);
 
-            using (HttpClient httpClient = new HttpClient())
+            string baseImageUrl = GetDefaultSizedImageUrl(isoRegionCode);
+            _logger.Debug("Default (sized) image url is {0}", baseImageUrl);
+
+            string bestImageUrl = GetBestSizedImageUrl(baseImageUrl, imageResolutions);
+            _logger.Info("Best (sized) image url is {0}", bestImageUrl);
+
+            if (string.IsNullOrEmpty(bestImageUrl))
             {
-                // get latest bing image url
-                string imageUrl = GetLatestBingImageUrl(httpClient, isoRegionCode);
-
-                // adjust image resolution
-                imageUrl = SetImageResolutionInUrl(imageUrl, imageResolution);
-
-                // download image and store locally
-                retValue = SaveLatestBingImageLocally(httpClient, imageUrl);
+                _logger.Info("No image url found for desired resolutions.");
+                return null;
             }
+
+            string retValue = SaveLatestBingImageLocally(bestImageUrl);
+            _logger.Info("Image saved at {0}", retValue);
 
             return retValue;
         }
 
-        private string SetImageResolutionInUrl(string imageUrl, ImageResolution imageResolution)
+        private string GetBestSizedImageUrl(string baseImageUrl, List<string> imageResolutions)
         {
-            if (imageResolution == ImageResolution.W1920H1080) // DEFAULT
+            foreach (string resolution in imageResolutions)
             {
-                return imageUrl;
+                string testUrl = baseImageUrl.Replace("_1920x1080", "_" + resolution);
+                bool success = CheckIfImageExists(testUrl);
+
+                _logger.Debug("Image resolution {0}: {1}", resolution, success ? "OK" : "NOT FOUND");
+
+                if (success)
+                    return testUrl;
             }
 
-            if (imageResolution == ImageResolution.W1920H1200)
-            {
-                imageUrl = imageUrl.Replace("_1920x1080", "_1920x1200");
-            }
+            return null;
+        }
 
-            return imageUrl;
+        private string GetDefaultSizedImageUrl(string isoRegionCode)
+        {
+            string requestUri = string.Concat(BING_IMAGE_ARCHIVE_URL, "&mkt=", isoRegionCode);
+
+            // get current image url
+            string json = _httpClient.GetStringAsync(requestUri).Result;
+            JObject jObject = JObject.Parse(json);
+            string imageUrl = jObject.SelectToken("images.[0].url").ToString();
+
+            return string.Concat("http://www.bing.com", imageUrl);
+        }
+
+        private bool CheckIfImageExists(string imageUrl)
+        {
+            HttpRequestMessage httpRequestMsg = new HttpRequestMessage(HttpMethod.Head, imageUrl);
+            HttpResponseMessage response = _httpClient.SendAsync(httpRequestMsg).Result;
+
+            return response.IsSuccessStatusCode;
         }
 
         private string GetAndValidateRegionCode(string isoRegionCode)
@@ -60,7 +90,7 @@
             {
                 try
                 {
-                    CultureInfo cultureInfo = new CultureInfo(isoRegionCode);
+                    new CultureInfo(isoRegionCode);
                 }
                 catch (CultureNotFoundException)
                 {
@@ -75,22 +105,9 @@
 
             return isoRegionCode;
         }
-
-        private string GetLatestBingImageUrl(HttpClient httpClient, string isoRegionCode)
+        private string SaveLatestBingImageLocally(string imageUrl)
         {
-            string requestUri = string.Concat(BING_IMAGE_ARCHIVE_URL, "&mkt=", isoRegionCode);
-
-            // get current image url
-            string json = httpClient.GetStringAsync(requestUri).Result;
-            JObject jObject = JObject.Parse(json);
-            string imageUrl = jObject.SelectToken("images.[0].url").ToString();
-
-            return string.Concat("http://www.bing.com", imageUrl);
-        }
-
-        private string SaveLatestBingImageLocally(HttpClient client, string imageUrl)
-        {
-            byte[] image = client.GetByteArrayAsync(imageUrl).Result;
+            byte[] image = _httpClient.GetByteArrayAsync(imageUrl).Result;
 
             string imageFileName = ExtractImageFilenameFromUrl(imageUrl);
             string localFilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Bing Wallpapers", imageFileName);
@@ -103,7 +120,13 @@
         private static string ExtractImageFilenameFromUrl(string imageUrl)
         {
             Uri uri = new Uri(imageUrl);
-            return uri.Segments[uri.Segments.Length-1];
+            return uri.Segments[uri.Segments.Length - 1];
+        }
+
+        public void Dispose()
+        {
+            _httpClient?.Dispose();
+            _handler?.Dispose();
         }
     }
 }

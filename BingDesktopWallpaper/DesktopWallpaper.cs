@@ -1,6 +1,7 @@
 ﻿using System;
 using Microsoft.Win32;
 using System.Runtime.InteropServices;
+using NLog;
 
 namespace Rs.Exp.BingDesktopWallpaper
 {
@@ -9,6 +10,8 @@ namespace Rs.Exp.BingDesktopWallpaper
         const int SET_DESKTOP_BACKGROUND = 20;
         const int UPDATE_INI_FILE = 1;
         const int SEND_WINDOWS_INI_CHANGE = 2;
+
+        private static readonly Logger _logger = LogManager.GetCurrentClassLogger();
 
         [DllImport("user32.dll", CharSet = CharSet.Auto)]
         static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
@@ -21,6 +24,8 @@ namespace Rs.Exp.BingDesktopWallpaper
         /// <returns></returns>
         public int SetImage(string imagePath, PictureOrientation orientation = PictureOrientation.Fill)
         {
+            _logger.Info("Set desktop image...");
+
             using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Control Panel\Desktop", true))
             {
                 if (key == null) throw new Exception("Registry key not found!");
